@@ -1,0 +1,220 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Encoder.h>
+#include <Servo.h>
+
+// Configuración de la pantalla OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Pines del encoder rotativo y ESC
+#define ENCODER_PIN_A 2
+#define ENCODER_PIN_B 3
+#define ENCODER_BUTTON_PIN 4
+#define ESC_PIN 9
+
+// Inicializar el encoder y el ESC
+Encoder encoder(ENCODER_PIN_A, ENCODER_PIN_B);
+Servo ESC;
+
+// Variables de control de menú
+long oldPosition = -999;
+int currentMenu = 0;
+bool inMenu = true;
+long rpmValue = 0;
+int timeValue = 0; // Tiempo en minutos
+int maxRPM = 6000;
+int maxTime = 60; // Máximo 60 minutos
+bool motorOn = false;
+
+// Variables para temporizador
+int remainingTime = 0; // Tiempo restante en segundos
+unsigned long lastTimeUpdate = 0;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Inicializar la pantalla OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("Error al iniciar la pantalla OLED"));
+    while (1);
+  }
+  display.clearDisplay();
+  pinMode(ENCODER_BUTTON_PIN, INPUT_PULLUP);
+
+  // Inicializar y calibrar el ESC
+  ESC.attach(ESC_PIN);
+  ESC.writeMicroseconds(2000); // Pulso de calibración máxima potencia
+  delay(2000);                  // Esperar 2 segundos
+  ESC.writeMicroseconds(1000); // Pulso de calibración mínima potencia
+  delay(2000);                  // Esperar 2 segundos
+
+  showWelcomeScreen();
+}
+
+void loop() {
+  long newPosition = encoder.read() / 4;
+
+  if (newPosition != oldPosition) {
+    oldPosition = newPosition;
+    if (inMenu) {
+      currentMenu = constrain(newPosition, 0, 3);
+      showMenu();
+    } else {
+      if (currentMenu == 0) {
+        rpmValue = updateEncoderValue(rpmValue, maxRPM, 100);
+        showRPMConfig();
+      } else if (currentMenu == 1) {
+        timeValue = updateEncoderValue(timeValue, maxTime, 1);
+        showTimeConfig();
+      }
+    }
+  }
+
+  if (digitalRead(ENCODER_BUTTON_PIN) == LOW) {
+    if (inMenu) {
+      enterMenuOption(currentMenu);
+    } else {
+      inMenu = true;
+      if (currentMenu == 0 || currentMenu == 1) {
+        encoder.write(0);  // Reiniciar encoder al salir de configuración
+      }
+      showMenu();
+    }
+    delay(500);
+  }
+
+  if (motorOn && millis() - lastTimeUpdate >= 1000) {
+    lastTimeUpdate = millis();
+    updateTimer();
+  }
+}
+
+void showWelcomeScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(20, 25);
+  display.println(F("Bienvenido"));
+  display.display();
+  delay(2000);
+  showMenu();
+}
+
+void showMenu() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(F("Menu principal"));
+  display.setCursor(0, 20);
+  display.println(currentMenu == 0 ? "> RPM" : "  RPM");
+  display.setCursor(0, 30);
+  display.println(currentMenu == 1 ? "> TIEMPO" : "  TIEMPO");
+  display.setCursor(0, 40);
+  display.println(currentMenu == 2 ? "> ERRORES" : "  ERRORES");
+  display.setCursor(0, 50);
+  display.println(currentMenu == 3 ? "> INICIAR" : "  INICIAR");
+  display.display();
+}
+
+void enterMenuOption(int option) {
+  inMenu = false;
+
+  if (option == 0) {
+    showRPMConfig();
+  } else if (option == 1) {
+    showTimeConfig();
+  } else if (option == 3) {
+    startMotor();
+  } else {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.println(F("Opcion seleccionada"));
+    display.setCursor(0, 20);
+    display.println(F("Presiona para salir"));
+    display.display();
+  }
+}
+
+void showRPMConfig() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.print(F("Configurar RPM: "));
+  display.println(rpmValue);
+  display.setCursor(0, 50);
+  display.println(F("Presiona para salir"));
+  display.display();
+}
+
+void showTimeConfig() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.print(F("Configurar Tiempo: "));
+  display.print(timeValue);
+  display.println(F(" min"));
+  display.setCursor(0, 50);
+  display.println(F("Presiona para salir"));
+  display.display();
+}
+
+long updateEncoderValue(long currentValue, long maxValue, long step) {
+  long newValue = constrain(encoder.read() / 4 * step, 0, maxValue);
+  return newValue;
+}
+
+void startMotor() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.println(F("Iniciando centrifugado"));
+  display.display();
+
+  ESC.writeMicroseconds(map(rpmValue, 0, maxRPM, 1000, 2000));  // Mapear RPM a microsegundos para ESC
+  remainingTime = timeValue * 60;  // Convertir minutos a segundos
+  motorOn = true;
+  lastTimeUpdate = millis();
+}
+
+void updateTimer() {
+  if (remainingTime > 0) {
+    remainingTime--;
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.print(F("RPM: "));
+    display.println(rpmValue);
+    display.setCursor(0, 20);
+    display.print(F("Tiempo restante: "));
+    display.print(remainingTime / 60);
+    display.print(F(":"));
+    display.println(remainingTime % 60);
+    display.display();
+  } else {
+    motorOn = false;
+    ESC.writeMicroseconds(1000); // Detener motor
+    showCompletionMessage();
+  }
+}
+
+void showCompletionMessage() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.println(F("Terminó la Centrifugación"));
+  display.display();
+  delay(5000);
+  showMenu();
+}
